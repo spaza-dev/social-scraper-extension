@@ -1,0 +1,531 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Tweet Scraper</title>
+    <link rel="stylesheet" href="sidepanel.css" />
+  </head>
+  <body>
+    <div class="sidepanel">
+      <!-- Header -->
+      <header class="header">
+        <div class="header-left">
+          <div class="logo">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+              <path
+                d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"
+                fill="#1D9BF0"
+              />
+            </svg>
+          </div>
+          <h1 class="header-title">Tweet Scraper</h1>
+        </div>
+        <div class="header-right">
+          <span class="version-badge">v1.0</span>
+        </div>
+      </header>
+
+      <!-- Navigation Tabs -->
+      <nav class="tabs">
+        <button class="tab active" data-tab="queue">
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          >
+            <rect x="3" y="3" width="18" height="18" rx="2" />
+            <path d="M3 9h18M9 21V9" />
+          </svg>
+          <span>Queue</span>
+          <span class="tab-count" id="queueTabCount">0</span>
+        </button>
+        <button class="tab" data-tab="data">
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          >
+            <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" />
+            <polyline points="14 2 14 8 20 8" />
+            <line x1="16" y1="13" x2="8" y2="13" />
+            <line x1="16" y1="17" x2="8" y2="17" />
+          </svg>
+          <span>Data</span>
+          <span class="tab-count" id="dataTabCount">0</span>
+        </button>
+        <button class="tab" data-tab="settings">
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          >
+            <circle cx="12" cy="12" r="3" />
+            <path
+              d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.6 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.6a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"
+            />
+          </svg>
+          <span>Settings</span>
+        </button>
+      </nav>
+
+      <!-- Tab Content -->
+      <main class="content">
+        <!-- ======================== Queue Tab ======================== -->
+        <div class="tab-content active" id="queueTab">
+          <!-- Stats Bar -->
+          <div class="stats-bar" id="statsBar">
+            <div class="stat-item">
+              <span class="stat-dot queued"></span>
+              <span id="countQueued">0</span> queued
+            </div>
+            <div class="stat-item">
+              <span class="stat-dot scraping"></span>
+              <span id="countScraping">0</span> scraping
+            </div>
+            <div class="stat-item">
+              <span class="stat-dot scraped"></span>
+              <span id="countScraped">0</span> scraped
+            </div>
+            <div class="stat-item">
+              <span class="stat-dot exported"></span>
+              <span id="countExported">0</span> exported
+            </div>
+            <div class="stat-item">
+              <span class="stat-dot failed"></span>
+              <span id="countFailed">0</span> failed
+            </div>
+          </div>
+
+          <!-- Action Buttons -->
+          <div class="action-bar">
+            <button class="btn btn-primary" id="collectBtn">
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <circle cx="11" cy="11" r="8" />
+                <path d="M21 21l-4.35-4.35" />
+              </svg>
+              Collect Tweets
+            </button>
+            <button class="btn btn-accent" id="scrapeBtn">
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <polygon points="5 3 19 12 5 21 5 3" />
+              </svg>
+              Start Scraping
+            </button>
+          </div>
+
+          <!-- Bulk Actions -->
+          <div class="bulk-bar">
+            <label class="checkbox-inline">
+              <input type="checkbox" id="selectAll" />
+              <span>Select All</span>
+            </label>
+            <div class="bulk-actions">
+              <button
+                class="btn btn-ghost btn-sm"
+                id="retryFailedBtn"
+                title="Retry Failed"
+              >
+                <svg
+                  width="14"
+                  height="14"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <path d="M23 4v6h-6M1 20v-6h6" />
+                  <path
+                    d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"
+                  />
+                </svg>
+                Retry
+              </button>
+              <button
+                class="btn btn-ghost btn-sm"
+                id="deleteSelectedBtn"
+                title="Delete Selected"
+              >
+                <svg
+                  width="14"
+                  height="14"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <polyline points="3 6 5 6 21 6" />
+                  <path
+                    d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"
+                  />
+                </svg>
+                Delete
+              </button>
+              <button
+                class="btn btn-ghost btn-sm"
+                id="clearQueuedBtn"
+                title="Clear Queued"
+              >
+                Clear Queued
+              </button>
+              <button
+                class="btn btn-ghost btn-sm btn-danger"
+                id="clearAllBtn"
+                title="Clear All"
+              >
+                Clear All
+              </button>
+            </div>
+          </div>
+
+          <!-- Queue List -->
+          <div class="queue-list" id="queueList">
+            <div class="empty-state">
+              <svg
+                width="48"
+                height="48"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.5"
+                opacity="0.3"
+              >
+                <rect x="3" y="3" width="18" height="18" rx="2" />
+                <path d="M3 9h18" />
+              </svg>
+              <p>No tweets in queue</p>
+              <p class="muted">
+                Click "Collect Tweets" on a Twitter page to start
+              </p>
+            </div>
+          </div>
+
+          <!-- Pagination -->
+          <div class="pagination" id="pagination" style="display: none">
+            <button class="btn btn-ghost btn-sm" id="prevPage">← Prev</button>
+            <span id="pageInfo">Page 1 of 1</span>
+            <button class="btn btn-ghost btn-sm" id="nextPage">Next →</button>
+          </div>
+        </div>
+
+        <!-- ======================== Data Tab ======================== -->
+        <div class="tab-content" id="dataTab">
+          <!-- Filter Bar -->
+          <div class="filter-bar">
+            <input
+              type="text"
+              class="form-input"
+              id="searchInput"
+              placeholder="Search tweets..."
+            />
+            <div class="filter-row">
+              <select class="form-select" id="filterStatus">
+                <option value="">All Status</option>
+                <option value="scraped">Scraped</option>
+                <option value="exported">Exported</option>
+              </select>
+              <select class="form-select" id="filterMedia">
+                <option value="">All Media</option>
+                <option value="has-media">Has Media</option>
+                <option value="no-media">No Media</option>
+              </select>
+              <select class="form-select" id="filterReply">
+                <option value="">All Types</option>
+                <option value="reply">Replies Only</option>
+                <option value="original">Originals Only</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- Export Buttons -->
+          <div class="export-bar">
+            <button class="btn btn-secondary" id="downloadCSVBtn">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+              CSV
+            </button>
+            <button class="btn btn-secondary" id="downloadSelectedCSVBtn">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+              Selected CSV
+            </button>
+            <button class="btn btn-secondary" id="downloadJSONLBtn">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+              JSONL
+            </button>
+            <button class="btn btn-secondary" id="downloadSelectedJSONLBtn">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+              Selected JSONL
+            </button>
+            <button class="btn btn-accent" id="sendApiBtn">
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <line x1="22" y1="2" x2="11" y2="13" />
+                <polygon points="22 2 15 22 11 13 2 9 22 2" />
+              </svg>
+              Send to API
+            </button>
+          </div>
+
+          <!-- Include Replies Toggle -->
+          <label class="checkbox-inline export-option">
+            <input type="checkbox" id="exportIncludeReplies" checked />
+            <span>Include replies in export</span>
+          </label>
+
+          <!-- Data Table -->
+          <div class="data-table-container">
+            <table class="data-table" id="dataTable">
+              <thead>
+                <tr>
+                  <th class="col-check">
+                    <input type="checkbox" id="dataSelectAll" />
+                  </th>
+                  <th class="col-author">Author</th>
+                  <th class="col-text">Text</th>
+                  <th class="col-num">❤️</th>
+                  <th class="col-num">🔁</th>
+                  <th class="col-num">💬</th>
+                  <th class="col-num">👁️</th>
+                  <th class="col-date">Date</th>
+                </tr>
+              </thead>
+              <tbody id="dataTableBody"></tbody>
+            </table>
+            <div class="empty-state" id="dataEmpty">
+              <svg
+                width="48"
+                height="48"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.5"
+                opacity="0.3"
+              >
+                <path
+                  d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"
+                />
+                <polyline points="14 2 14 8 20 8" />
+              </svg>
+              <p>No scraped data yet</p>
+              <p class="muted">Scrape tweets from the Queue tab first</p>
+            </div>
+          </div>
+
+          <!-- API Progress -->
+          <div class="api-progress" id="apiProgress" style="display: none">
+            <div class="progress-bar">
+              <div class="progress-fill" id="apiProgressFill"></div>
+            </div>
+            <span id="apiProgressText">Sending...</span>
+          </div>
+        </div>
+
+        <!-- ======================== Settings Tab ======================== -->
+        <div class="tab-content" id="settingsTab">
+          <section class="settings-section">
+            <h2 class="section-title">API Configuration</h2>
+            <div class="form-group">
+              <label class="form-label">API Endpoint URL</label>
+              <input
+                type="url"
+                class="form-input"
+                id="settingApiEndpoint"
+                placeholder="https://your-api.com/ingest"
+              />
+            </div>
+            <div class="form-group">
+              <label class="form-label">API Key / Token</label>
+              <input
+                type="password"
+                class="form-input"
+                id="settingApiKey"
+                placeholder="Enter API key"
+              />
+            </div>
+            <div class="form-group">
+              <label class="form-label">API Batch Size</label>
+              <input
+                type="number"
+                class="form-input form-input-sm"
+                id="settingBatchSize"
+                value="25"
+                min="1"
+                max="100"
+              />
+            </div>
+          </section>
+
+          <section class="settings-section">
+            <h2 class="section-title">Scraping Behavior</h2>
+            <div class="form-group">
+              <label class="form-label">Scrape Delay — Min (ms)</label>
+              <input
+                type="number"
+                class="form-input form-input-sm"
+                id="settingDelayMin"
+                value="2000"
+                min="500"
+                max="30000"
+              />
+            </div>
+            <div class="form-group">
+              <label class="form-label">Scrape Delay — Max (ms)</label>
+              <input
+                type="number"
+                class="form-input form-input-sm"
+                id="settingDelayMax"
+                value="6000"
+                min="1000"
+                max="60000"
+              />
+            </div>
+            <div class="form-group">
+              <label class="form-label">Scroll Delay — Min (ms)</label>
+              <input
+                type="number"
+                class="form-input form-input-sm"
+                id="settingScrollDelayMin"
+                value="1000"
+                min="500"
+                max="10000"
+              />
+            </div>
+            <div class="form-group">
+              <label class="form-label">Scroll Delay — Max (ms)</label>
+              <input
+                type="number"
+                class="form-input form-input-sm"
+                id="settingScrollDelayMax"
+                value="3000"
+                min="1000"
+                max="30000"
+              />
+            </div>
+            <div class="form-group">
+              <label class="form-label">Tab Closure Delay — Min (ms)</label>
+              <input
+                type="number"
+                class="form-input form-input-sm"
+                id="settingCloseDelayMin"
+                value="2000"
+                min="0"
+                max="10000"
+              />
+            </div>
+            <div class="form-group">
+              <label class="form-label">Tab Closure Delay — Max (ms)</label>
+              <input
+                type="number"
+                class="form-input form-input-sm"
+                id="settingCloseDelayMax"
+                value="5000"
+                min="0"
+                max="30000"
+              />
+            </div>
+            <div class="form-group">
+              <label class="form-label">Max Scroll Cycles</label>
+              <input
+                type="number"
+                class="form-input form-input-sm"
+                id="settingMaxScrolls"
+                value="100"
+                min="5"
+                max="1000"
+              />
+            </div>
+            <div class="form-group">
+              <label class="form-label">Stale Cycles Threshold</label>
+              <input
+                type="number"
+                class="form-input form-input-sm"
+                id="settingStaleThreshold"
+                value="3"
+                min="1"
+                max="20"
+              />
+            </div>
+            <div class="form-group">
+              <label class="form-label">Max Retries on Failure</label>
+              <input
+                type="number"
+                class="form-input form-input-sm"
+                id="settingMaxRetries"
+                value="2"
+                min="0"
+                max="10"
+              />
+            </div>
+            <div class="form-group">
+              <label class="form-label">Session Limit (tweets per batch)</label>
+              <input
+                type="number"
+                class="form-input form-input-sm"
+                id="settingSessionLimit"
+                value="50"
+                min="1"
+                max="500"
+              />
+            </div>
+            <div class="form-group">
+              <label class="form-label">Cool-down Period (minutes)</label>
+              <input
+                type="number"
+                class="form-input form-input-sm"
+                id="settingCooldown"
+                value="15"
+                min="1"
+                max="120"
+              />
+            </div>
+            <div class="form-group">
+              <label class="checkbox-inline">
+                <input type="checkbox" id="settingIncludeReplies" checked />
+                <span>Include Replies in Scrape</span>
+              </label>
+            </div>
+          </section>
+
+          <div class="settings-actions">
+            <button class="btn btn-primary" id="saveSettingsBtn">
+              Save Settings
+            </button>
+            <button class="btn btn-ghost" id="resetSettingsBtn">
+              Reset to Defaults
+            </button>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <script src="sidepanel.js"></script>
+  </body>
+</html>

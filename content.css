@@ -1,0 +1,162 @@
+/* ============================================================================
+   Content CSS — FAB & Overlay Styles
+   ============================================================================ */
+
+/* FAB Container */
+#tweet-scraper-fab {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  z-index: 10000;
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+/* FAB Button */
+#tweet-scraper-fab button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 20px;
+  border: none;
+  border-radius: 28px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+  color: white;
+  background: #1d9bf0;
+}
+
+#tweet-scraper-fab button:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(29, 155, 240, 0.4);
+}
+
+#tweet-scraper-fab button:active {
+  transform: translateY(0);
+}
+
+/* FAB States */
+#tweet-scraper-fab.fab-idle button {
+  background: #1d9bf0;
+}
+
+#tweet-scraper-fab.fab-collecting button {
+  background: #00ba7c;
+  animation: fab-pulse 2s infinite;
+}
+
+#tweet-scraper-fab.fab-scraping button {
+  background: #f97316;
+  animation: fab-pulse 2s infinite;
+}
+
+/* FAB Badge */
+.fab-badge {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  background: #f4212e;
+  color: white;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 12px;
+  min-width: 20px;
+  text-align: center;
+  box-shadow: 0 2px 6px rgba(244, 33, 46, 0.4);
+  pointer-events: none;
+}
+
+/* FAB Icon */
+.fab-icon {
+  flex-shrink: 0;
+}
+
+/* Pulse animation */
+@keyframes fab-pulse {
+  0%,
+  100% {
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+  }
+  50% {
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.35);
+    transform: scale(1.03);
+  }
+}
+
+/* ============================================================================
+   Scraping Overlay — thin progress bar at top
+   ============================================================================ */
+
+#tweet-scraper-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: linear-gradient(90deg, #1d9bf0, #00ba7c, #ffad1f, #1d9bf0);
+  background-size: 300% 100%;
+  z-index: 10001;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+  pointer-events: none;
+}
+
+#tweet-scraper-overlay.active {
+  opacity: 1;
+  animation: overlay-shimmer 2s linear infinite;
+}
+
+@keyframes overlay-shimmer {
+  0% {
+    background-position: 0% 0%;
+  }
+  100% {
+    background-position: 300% 0%;
+  }
+}
+
+/* ============================================================================
+   Toast Notifications
+   ============================================================================ */
+
+.tweet-scraper-toast {
+  position: fixed;
+  bottom: 90px;
+  right: 24px;
+  background: #15202b;
+  color: #e7e9ea;
+  padding: 12px 20px;
+  border-radius: 12px;
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 13px;
+  font-weight: 500;
+  z-index: 10002;
+  transform: translateY(20px);
+  opacity: 0;
+  transition: all 0.3s ease;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  max-width: 320px;
+  pointer-events: none;
+}
+
+.tweet-scraper-toast.visible {
+  transform: translateY(0);
+  opacity: 1;
+}
+
+.tweet-scraper-toast.success {
+  border-left: 4px solid #00ba7c;
+}
+
+.tweet-scraper-toast.error {
+  border-left: 4px solid #f4212e;
+}
+
+.tweet-scraper-toast.info {
+  border-left: 4px solid #1d9bf0;
+}
