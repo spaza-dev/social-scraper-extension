@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Spaza Social Scraper",
-  "version": "1.10.0",
+  "version": "1.11.1",
   "description": "Collect and scrape tweets for media monitoring and analysis",
   "permissions": [
     "activeTab",

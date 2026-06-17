@@ -4,6 +4,8 @@
  * Queue processor, export engine, IndexedDB manager, message router.
  */
 
+importScripts('db.js');
+
 // ============================================================================
 // State
 // ============================================================================
@@ -138,6 +140,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       handleResetSettings(sendResponse);
       return true;
 
+    // --- Projects ---
+    case 'GET_PROJECTS':
+      handleGetProjects(sendResponse);
+      return true;
+
+    case 'CREATE_PROJECT':
+      handleCreateProject(message.data, sendResponse);
+      return true;
+
+    case 'DELETE_PROJECT':
+      handleDeleteProject(message.data, sendResponse);
+      return true;
+
     // --- Status ---
     case 'GET_STATUS':
       sendResponse({
@@ -176,8 +191,7 @@ async function handleStartScraping() {
 async function handleRateLimitExceeded() {
   console.warn('[BG] Rate limit exceeded — pausing all activity');
   
-  const db = await getDB();
-  const settings = await dbGetAllSettings(db);
+  const settings = await TwitterScraperDB.getAllSettings();
   const minutes = settings.cooldown_minutes || 15;
   
   cooldownUntil = Date.now() + (minutes * 60 * 1000);
@@ -253,8 +267,8 @@ async function processQueue() {
       }
 
       // Check session limit
-      const db = await getDB();
-      const settings = await dbGetAllSettings(db);
+      const settings = await TwitterScraperDB.getAllSettings();
+      const activeProjectId = settings.active_project_id || 'default';
       if (sessionScrapeCount >= (settings.session_limit || 50)) {
         console.log('[BG] Session limit reached:', sessionScrapeCount);
         scrapingState = 'paused';
@@ -263,7 +277,7 @@ async function processQueue() {
       }
 
       // Get next queued tweet
-      const next = await dbGetNextQueued(db);
+      const next = await TwitterScraperDB.getNextQueued(activeProjectId);
 
       if (!next) {
         console.log('[BG] Queue empty — scraping complete');
@@ -273,7 +287,7 @@ async function processQueue() {
       }
 
       // Update status to scraping
-      await dbUpdateStatus(db, next.url, 'scraping');
+      await TwitterScraperDB.updateStatus(activeProjectId, next.url, 'scraping');
       broadcastToSidepanel({
         type: 'QUEUE_ITEM_UPDATE',
         data: { url: next.url, status: 'scraping' }
@@ -292,7 +306,7 @@ async function processQueue() {
         // Check if we should retry
         const maxRetries = settings.max_retries || 2;
         if (next.retry_count < maxRetries) {
-          await dbUpdateStatus(db, next.url, 'queued');
+          await TwitterScraperDB.updateStatus(activeProjectId, next.url, 'queued');
         }
         broadcastToSidepanel({
           type: 'QUEUE_ITEM_UPDATE',
@@ -326,6 +340,7 @@ function scrapeSingleTweet(queueItem) {
     const TIMEOUT = 30000;
     let resolved = false;
     let tabId = null;
+    const activeProjectId = queueItem.project_id || 'default';
 
     // Timeout handler
     const timer = setTimeout(async () => {
@@ -333,8 +348,7 @@ function scrapeSingleTweet(queueItem) {
       resolved = true;
       console.log('[BG] Scrape timeout for:', queueItem.url);
 
-      const db = await getDB();
-      await dbMarkFailed(db, queueItem.url, 'Timeout — no TweetDetail response received');
+      await TwitterScraperDB.markFailed(activeProjectId, queueItem.url, 'Timeout — no TweetDetail response received');
 
       if (tabId) {
         try { await chrome.tabs.remove(tabId); } catch (e) {}
@@ -357,18 +371,17 @@ function scrapeSingleTweet(queueItem) {
       chrome.runtime.onMessage.removeListener(listener);
 
       const { tweet, replies } = message.data;
-      const db = await getDB();
 
       if (tweet) {
-        await dbSaveScrapedData(db, queueItem.url, tweet, replies);
+        await TwitterScraperDB.saveScrapedData(activeProjectId, queueItem.url, tweet, replies);
         console.log('[BG] Scraped:', tweet.id, '| Replies:', replies?.length || 0);
       } else {
-        await dbMarkFailed(db, queueItem.url, 'No tweet data in response');
+        await TwitterScraperDB.markFailed(activeProjectId, queueItem.url, 'No tweet data in response');
       }
 
       // Close tab after optional randomized delay
       if (tabId) {
-        const settings = await dbGetAllSettings(db);
+        const settings = await TwitterScraperDB.getAllSettings();
         const minCloseDelay = settings.close_delay_min || 2000;
         const maxCloseDelay = settings.close_delay_max || 5000;
         const closeDelay = minCloseDelay + Math.random() * (maxCloseDelay - minCloseDelay);
@@ -395,8 +408,7 @@ function scrapeSingleTweet(queueItem) {
       clearTimeout(timer);
       chrome.runtime.onMessage.removeListener(listener);
 
-      const db = await getDB();
-      await dbMarkFailed(db, queueItem.url, `Tab creation error: ${err.message}`);
+      await TwitterScraperDB.markFailed(activeProjectId, queueItem.url, `Tab creation error: ${err.message}`);
       currentScrapingTabId = null;
       resolve(false);
     }
@@ -407,120 +419,18 @@ function scrapeSingleTweet(queueItem) {
 // Queue & DB Operations (Background uses chrome.storage-free IndexedDB via helpers)
 // ============================================================================
 
-let _db = null;
+// ============================================================================
+// Queue & DB Operations — Active Project Helper
+// ============================================================================
 
-function getDB() {
-  if (_db) return Promise.resolve(_db);
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open('TwitterScraperDB', 1);
-    request.onupgradeneeded = (event) => {
-      const db = event.target.result;
-      if (!db.objectStoreNames.contains('tweet_queue')) {
-        const qs = db.createObjectStore('tweet_queue', { keyPath: 'url' });
-        qs.createIndex('by_status', 'status', { unique: false });
-        qs.createIndex('by_discovered', 'discovered_at', { unique: false });
-        qs.createIndex('by_tweet_id', 'tweet_id', { unique: false });
-      }
-      if (!db.objectStoreNames.contains('intercepted_blobs')) {
-        db.createObjectStore('intercepted_blobs', { keyPath: 'id' });
-      }
-      if (!db.objectStoreNames.contains('settings')) {
-        db.createObjectStore('settings', { keyPath: 'key' });
-      }
-    };
-    request.onsuccess = () => { _db = request.result; resolve(_db); };
-    request.onerror = () => reject(request.error);
-  });
-}
-
-function _idbReq(req) {
-  return new Promise((resolve, reject) => {
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  });
-}
-
-async function dbGetNextQueued(db) {
-  const tx = db.transaction('tweet_queue', 'readonly');
-  const idx = tx.objectStore('tweet_queue').index('by_status');
-  return new Promise((resolve, reject) => {
-    const req = idx.openCursor('queued');
-    req.onsuccess = () => resolve(req.result ? req.result.value : null);
-    req.onerror = () => reject(req.error);
-  });
-}
-
-async function dbUpdateStatus(db, url, status, extra = {}) {
-  const tx = db.transaction('tweet_queue', 'readwrite');
-  const store = tx.objectStore('tweet_queue');
-  const entry = await _idbReq(store.get(url));
-  if (!entry) return;
-  entry.status = status;
-  Object.assign(entry, extra);
-  if (status === 'scraped') entry.scraped_at = new Date().toISOString();
-  if (status === 'exported') entry.exported_at = new Date().toISOString();
-  await _idbReq(store.put(entry));
-}
-
-async function dbSaveScrapedData(db, url, tweet, replies) {
-  const tx = db.transaction('tweet_queue', 'readwrite');
-  const store = tx.objectStore('tweet_queue');
-  const entry = await _idbReq(store.get(url));
-  if (!entry) return;
-  entry.status = 'scraped';
-  entry.scraped_at = new Date().toISOString();
-  entry.data = tweet;
-  entry.replies = replies || [];
-  entry.error = null;
-  await _idbReq(store.put(entry));
-}
-
-async function dbMarkFailed(db, url, error) {
-  const tx = db.transaction('tweet_queue', 'readwrite');
-  const store = tx.objectStore('tweet_queue');
-  const entry = await _idbReq(store.get(url));
-  if (!entry) return;
-  entry.status = 'failed';
-  entry.error = error;
-  entry.retry_count = (entry.retry_count || 0) + 1;
-  await _idbReq(store.put(entry));
-}
-
-async function dbAddUrlsToQueue(db, urls, sourcePage) {
-  const tx = db.transaction('tweet_queue', 'readwrite');
-  const store = tx.objectStore('tweet_queue');
-  let added = 0;
-
-  for (const { url, tweetId } of urls) {
-    const existing = await _idbReq(store.get(url));
-    if (!existing) {
-      store.put({
-        url,
-        tweet_id: tweetId,
-        status: 'queued',
-        discovered_at: new Date().toISOString(),
-        scraped_at: null,
-        exported_at: null,
-        error: null,
-        retry_count: 0,
-        data: null,
-        replies: null,
-        source_page: sourcePage
-      });
-      added++;
-    }
-  }
-
-  return new Promise((resolve, reject) => {
-    tx.oncomplete = () => resolve(added);
-    tx.onerror = () => reject(tx.error);
-  });
+async function getActiveProjectId() {
+  return await TwitterScraperDB.getSetting('active_project_id') || 'default';
 }
 
 async function handleTweetUrlsFound(data, sendResponse) {
   try {
-    const db = await getDB();
-    const added = await dbAddUrlsToQueue(db, data.urls, data.sourcePage);
+    const activeProjectId = await getActiveProjectId();
+    const added = await TwitterScraperDB.addUrlsToQueue(activeProjectId, data.urls, data.sourcePage);
     
     // Notify sidepanel about the new count
     broadcastToSidepanel({
@@ -535,42 +445,14 @@ async function handleTweetUrlsFound(data, sendResponse) {
   }
 }
 
-async function dbGetAllQueue(db) {
-  const tx = db.transaction('tweet_queue', 'readonly');
-  return _idbReq(tx.objectStore('tweet_queue').getAll());
-}
-
-async function dbGetByStatus(db, status) {
-  const tx = db.transaction('tweet_queue', 'readonly');
-  const idx = tx.objectStore('tweet_queue').index('by_status');
-  return _idbReq(idx.getAll(status));
-}
-
-async function dbGetAllSettings(db) {
-  const defaults = {
-    api_endpoint: '', api_key: '', api_batch_size: 25,
-    scrape_delay_min: 2000, scrape_delay_max: 6000,
-    scroll_delay_min: 1000, scroll_delay_max: 3000,
-    max_scroll_cycles: 100,
-    max_retries: 2, include_replies: true,
-    stale_threshold: 3, session_limit: 50,
-    cooldown_minutes: 15,
-    close_delay_min: 2000, close_delay_max: 5000
-  };
-  const tx = db.transaction('settings', 'readonly');
-  const entries = await _idbReq(tx.objectStore('settings').getAll());
-  for (const e of entries) defaults[e.key] = e.value;
-  return defaults;
-}
-
 // ============================================================================
 // Message Handlers — Queue
 // ============================================================================
 
 async function handleGetQueue(sendResponse) {
   try {
-    const db = await getDB();
-    const items = await dbGetAllQueue(db);
+    const activeProjectId = await getActiveProjectId();
+    const items = await TwitterScraperDB.getAllQueue(activeProjectId);
     sendResponse({ success: true, items });
   } catch (err) {
     sendResponse({ success: false, error: err.message });
@@ -579,12 +461,8 @@ async function handleGetQueue(sendResponse) {
 
 async function handleGetQueueCounts(sendResponse) {
   try {
-    const db = await getDB();
-    const items = await dbGetAllQueue(db);
-    const counts = { queued: 0, scraping: 0, scraped: 0, exporting: 0, exported: 0, failed: 0, total: items.length };
-    for (const item of items) {
-      if (counts[item.status] !== undefined) counts[item.status]++;
-    }
+    const activeProjectId = await getActiveProjectId();
+    const counts = await TwitterScraperDB.getQueueCounts(activeProjectId);
     sendResponse({ success: true, counts });
   } catch (err) {
     sendResponse({ success: false, error: err.message });
@@ -593,13 +471,10 @@ async function handleGetQueueCounts(sendResponse) {
 
 async function handleDeleteQueueItems(data, sendResponse) {
   try {
-    const db = await getDB();
-    const tx = db.transaction('tweet_queue', 'readwrite');
-    const store = tx.objectStore('tweet_queue');
+    const activeProjectId = await getActiveProjectId();
     for (const url of (data.urls || [])) {
-      store.delete(url);
+      await TwitterScraperDB.deleteFromQueue(activeProjectId, url);
     }
-    await new Promise((r, j) => { tx.oncomplete = r; tx.onerror = j; });
     sendResponse({ success: true });
   } catch (err) {
     sendResponse({ success: false, error: err.message });
@@ -608,16 +483,11 @@ async function handleDeleteQueueItems(data, sendResponse) {
 
 async function handleClearQueue(data, sendResponse) {
   try {
-    const db = await getDB();
+    const activeProjectId = await getActiveProjectId();
     if (data?.statusOnly) {
-      const items = await dbGetByStatus(db, data.statusOnly);
-      const tx = db.transaction('tweet_queue', 'readwrite');
-      const store = tx.objectStore('tweet_queue');
-      for (const item of items) store.delete(item.url);
-      await new Promise((r, j) => { tx.oncomplete = r; tx.onerror = j; });
+      await TwitterScraperDB.deleteByStatus(activeProjectId, data.statusOnly);
     } else {
-      const tx = db.transaction('tweet_queue', 'readwrite');
-      await _idbReq(tx.objectStore('tweet_queue').clear());
+      await TwitterScraperDB.clearQueue(activeProjectId);
     }
     sendResponse({ success: true });
   } catch (err) {
@@ -627,21 +497,9 @@ async function handleClearQueue(data, sendResponse) {
 
 async function handleRetryFailed(sendResponse) {
   try {
-    const db = await getDB();
-    const settings = await dbGetAllSettings(db);
-    const failed = await dbGetByStatus(db, 'failed');
-    const tx = db.transaction('tweet_queue', 'readwrite');
-    const store = tx.objectStore('tweet_queue');
-    let retried = 0;
-    for (const entry of failed) {
-      if (entry.retry_count < (settings.max_retries || 2)) {
-        entry.status = 'queued';
-        entry.error = null;
-        store.put(entry);
-        retried++;
-      }
-    }
-    await new Promise((r, j) => { tx.oncomplete = r; tx.onerror = j; });
+    const activeProjectId = await getActiveProjectId();
+    const settings = await TwitterScraperDB.getAllSettings();
+    const retried = await TwitterScraperDB.retryFailed(activeProjectId, settings.max_retries || 2);
     sendResponse({ success: true, retried });
   } catch (err) {
     sendResponse({ success: false, error: err.message });
@@ -654,16 +512,14 @@ async function handleRetryFailed(sendResponse) {
 
 async function handleExportCSV(data, sendResponse) {
   try {
-    const db = await getDB();
+    const activeProjectId = await getActiveProjectId();
     let items;
 
     if (data?.urls?.length) {
-      // Selected items
-      const all = await dbGetAllQueue(db);
+      const all = await TwitterScraperDB.getAllQueue(activeProjectId);
       items = all.filter(i => data.urls.includes(i.url));
     } else {
-      // All scraped
-      items = await dbGetByStatus(db, 'scraped');
+      items = await TwitterScraperDB.getByStatus(activeProjectId, 'scraped');
     }
 
     const includeReplies = data?.includeReplies !== false;
@@ -684,21 +540,14 @@ async function handleExportCSV(data, sendResponse) {
       ...rows.map(row => row.map(escapeCSV).join(','))
     ].join('\n');
 
-    // Send CSV back to sidepanel for download
     broadcastToSidepanel({
       type: 'CSV_READY',
       data: { csv: csvContent, count: rows.length }
     });
 
-    // Mark as exported
-    const tx = db.transaction('tweet_queue', 'readwrite');
-    const store = tx.objectStore('tweet_queue');
     for (const item of items) {
-      const entry = await _idbReq(store.get(item.url));
-      if (entry && entry.status === 'scraped') {
-        entry.status = 'exported';
-        entry.exported_at = new Date().toISOString();
-        store.put(entry);
+      if (item.status === 'scraped') {
+        await TwitterScraperDB.updateStatus(activeProjectId, item.url, 'exported');
       }
     }
 
@@ -710,14 +559,14 @@ async function handleExportCSV(data, sendResponse) {
 
 async function handleExportJSONL(data, sendResponse) {
   try {
-    const db = await getDB();
+    const activeProjectId = await getActiveProjectId();
     let items;
 
     if (data?.urls?.length) {
-      const all = await dbGetAllQueue(db);
+      const all = await TwitterScraperDB.getAllQueue(activeProjectId);
       items = all.filter(i => data.urls.includes(i.url));
     } else {
-      items = await dbGetByStatus(db, 'scraped');
+      items = await TwitterScraperDB.getByStatus(activeProjectId, 'scraped');
     }
 
     const includeReplies = data?.includeReplies !== false;
@@ -739,14 +588,9 @@ async function handleExportJSONL(data, sendResponse) {
       data: { jsonl: jsonlContent, count: jsonlLines.length }
     });
 
-    const tx = db.transaction('tweet_queue', 'readwrite');
-    const store = tx.objectStore('tweet_queue');
     for (const item of items) {
-      const entry = await _idbReq(store.get(item.url));
-      if (entry && entry.status === 'scraped') {
-        entry.status = 'exported';
-        entry.exported_at = new Date().toISOString();
-        store.put(entry);
+      if (item.status === 'scraped') {
+        await TwitterScraperDB.updateStatus(activeProjectId, item.url, 'exported');
       }
     }
 
@@ -816,8 +660,8 @@ function escapeCSV(value) {
 
 async function handleExportAPI(data, sendResponse) {
   try {
-    const db = await getDB();
-    const settings = await dbGetAllSettings(db);
+    const activeProjectId = await getActiveProjectId();
+    const settings = await TwitterScraperDB.getAllSettings();
     const endpoint = settings.api_endpoint;
 
     if (!endpoint) {
@@ -827,15 +671,14 @@ async function handleExportAPI(data, sendResponse) {
 
     let items;
     if (data?.urls?.length) {
-      const all = await dbGetAllQueue(db);
+      const all = await TwitterScraperDB.getAllQueue(activeProjectId);
       items = all.filter(i => data.urls.includes(i.url));
     } else {
-      items = await dbGetByStatus(db, 'scraped');
+      items = await TwitterScraperDB.getByStatus(activeProjectId, 'scraped');
     }
 
     const includeReplies = data?.includeReplies !== false;
 
-    // Build posts array
     const posts = [];
     for (const item of items) {
       if (item.data) posts.push(item.data);
@@ -849,7 +692,6 @@ async function handleExportAPI(data, sendResponse) {
       return;
     }
 
-    // Batch
     const batchSize = settings.api_batch_size || 25;
     const batches = [];
     for (let i = 0; i < posts.length; i += batchSize) {
@@ -901,16 +743,10 @@ async function handleExportAPI(data, sendResponse) {
       }
     }
 
-    // Mark items as exported
     if (successCount > 0) {
-      const tx = db.transaction('tweet_queue', 'readwrite');
-      const store = tx.objectStore('tweet_queue');
       for (const item of items) {
-        const entry = await _idbReq(store.get(item.url));
-        if (entry && entry.status === 'scraped') {
-          entry.status = 'exported';
-          entry.exported_at = new Date().toISOString();
-          store.put(entry);
+        if (item.status === 'scraped') {
+          await TwitterScraperDB.updateStatus(activeProjectId, item.url, 'exported');
         }
       }
     }
@@ -932,8 +768,7 @@ async function handleExportAPI(data, sendResponse) {
 
 async function handleGetSettings(sendResponse) {
   try {
-    const db = await getDB();
-    const settings = await dbGetAllSettings(db);
+    const settings = await TwitterScraperDB.getAllSettings();
     sendResponse(settings);
   } catch (err) {
     sendResponse({
@@ -947,13 +782,7 @@ async function handleGetSettings(sendResponse) {
 
 async function handleSaveSettings(data, sendResponse) {
   try {
-    const db = await getDB();
-    const tx = db.transaction('settings', 'readwrite');
-    const store = tx.objectStore('settings');
-    for (const [key, value] of Object.entries(data)) {
-      store.put({ key, value });
-    }
-    await new Promise((r, j) => { tx.oncomplete = r; tx.onerror = j; });
+    await TwitterScraperDB.saveAllSettings(data);
     sendResponse({ success: true });
   } catch (err) {
     sendResponse({ success: false, error: err.message });
@@ -962,9 +791,43 @@ async function handleSaveSettings(data, sendResponse) {
 
 async function handleResetSettings(sendResponse) {
   try {
-    const db = await getDB();
-    const tx = db.transaction('settings', 'readwrite');
-    await _idbReq(tx.objectStore('settings').clear());
+    await TwitterScraperDB.resetSettings();
+    sendResponse({ success: true });
+  } catch (err) {
+    sendResponse({ success: false, error: err.message });
+  }
+}
+
+// ============================================================================
+// Project Message Handlers
+// ============================================================================
+
+async function handleGetProjects(sendResponse) {
+  try {
+    const projects = await TwitterScraperDB.getProjects();
+    sendResponse({ success: true, projects });
+  } catch (err) {
+    sendResponse({ success: false, error: err.message });
+  }
+}
+
+async function handleCreateProject(data, sendResponse) {
+  try {
+    const project = await TwitterScraperDB.createProject(data.name);
+    await TwitterScraperDB.saveSetting('active_project_id', project.id);
+    sendResponse({ success: true, project });
+  } catch (err) {
+    sendResponse({ success: false, error: err.message });
+  }
+}
+
+async function handleDeleteProject(data, sendResponse) {
+  try {
+    await TwitterScraperDB.deleteProject(data.id);
+    const active = await getActiveProjectId();
+    if (active === data.id) {
+      await TwitterScraperDB.saveSetting('active_project_id', 'default');
+    }
     sendResponse({ success: true });
   } catch (err) {
     sendResponse({ success: false, error: err.message });

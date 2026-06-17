@@ -9,12 +9,13 @@
 
 const TwitterScraperDB = (() => {
   const DB_NAME = 'TwitterScraperDB';
-  const DB_VERSION = 1;
+  const DB_VERSION = 3;
 
   const STORES = {
     QUEUE: 'tweet_queue',
     BLOBS: 'intercepted_blobs',
-    SETTINGS: 'settings'
+    SETTINGS: 'settings',
+    PROJECTS: 'projects'
   };
 
   const DEFAULT_SETTINGS = {
@@ -32,7 +33,8 @@ const TwitterScraperDB = (() => {
     session_limit: 50,
     cooldown_minutes: 15,
     close_delay_min: 2000,
-    close_delay_max: 5000
+    close_delay_max: 5000,
+    active_project_id: 'default'
   };
 
   let dbInstance = null;
@@ -44,18 +46,57 @@ const TwitterScraperDB = (() => {
   function open() {
     if (dbInstance) return Promise.resolve(dbInstance);
     return new Promise((resolve, reject) => {
+      // First, open without version to check the current version and read legacy data if needed
+      const checkRequest = indexedDB.open(DB_NAME);
+
+      checkRequest.onupgradeneeded = (event) => {
+        // If the database didn't exist yet, it will create version 1 by default.
+        // We don't create any stores here.
+      };
+
+      checkRequest.onsuccess = (event) => {
+        const db = event.target.result;
+        const currentVersion = db.version;
+
+        if (currentVersion < 3 && db.objectStoreNames.contains(STORES.QUEUE)) {
+          // Read legacy items for migration
+          try {
+            const tx = db.transaction(STORES.QUEUE, 'readonly');
+            const store = tx.objectStore(STORES.QUEUE);
+            const getReq = store.getAll();
+
+            getReq.onsuccess = () => {
+              const legacyItems = getReq.result || [];
+              db.close();
+              openVersion3(legacyItems).then(resolve).catch(reject);
+            };
+
+            getReq.onerror = () => {
+              db.close();
+              openVersion3([]).then(resolve).catch(reject);
+            };
+          } catch (err) {
+            db.close();
+            openVersion3([]).then(resolve).catch(reject);
+          }
+        } else {
+          db.close();
+          openVersion3([]).then(resolve).catch(reject);
+        }
+      };
+
+      checkRequest.onerror = (event) => {
+        openVersion3([]).then(resolve).catch(reject);
+      };
+    });
+  }
+
+  function openVersion3(legacyItems = []) {
+    return new Promise((resolve, reject) => {
       const request = indexedDB.open(DB_NAME, DB_VERSION);
 
       request.onupgradeneeded = (event) => {
         const db = event.target.result;
-
-        // tweet_queue store
-        if (!db.objectStoreNames.contains(STORES.QUEUE)) {
-          const queueStore = db.createObjectStore(STORES.QUEUE, { keyPath: 'url' });
-          queueStore.createIndex('by_status', 'status', { unique: false });
-          queueStore.createIndex('by_discovered', 'discovered_at', { unique: false });
-          queueStore.createIndex('by_tweet_id', 'tweet_id', { unique: false });
-        }
 
         // intercepted_blobs store
         if (!db.objectStoreNames.contains(STORES.BLOBS)) {
@@ -66,14 +107,74 @@ const TwitterScraperDB = (() => {
         if (!db.objectStoreNames.contains(STORES.SETTINGS)) {
           db.createObjectStore(STORES.SETTINGS, { keyPath: 'key' });
         }
+
+        // projects store
+        if (!db.objectStoreNames.contains(STORES.PROJECTS)) {
+          db.createObjectStore(STORES.PROJECTS, { keyPath: 'id' });
+        }
+
+        // Always recreate queue store on upgrade to v3 to guarantee correct compound key schema
+        if (db.objectStoreNames.contains(STORES.QUEUE)) {
+          db.deleteObjectStore(STORES.QUEUE);
+        }
+
+        const queueStore = db.createObjectStore(STORES.QUEUE, { keyPath: ['project_id', 'url'] });
+        queueStore.createIndex('by_url', 'url', { unique: false });
+        queueStore.createIndex('by_project', 'project_id', { unique: false });
+        queueStore.createIndex('by_status', 'status', { unique: false });
+        queueStore.createIndex('by_project_status', ['project_id', 'status'], { unique: false });
+        queueStore.createIndex('by_discovered', 'discovered_at', { unique: false });
+        queueStore.createIndex('by_tweet_id', 'tweet_id', { unique: false });
       };
 
-      request.onsuccess = () => {
-        dbInstance = request.result;
-        resolve(dbInstance);
+      request.onsuccess = async (event) => {
+        dbInstance = event.target.result;
+
+        try {
+          // Seed default project
+          await seedDefaultProject(dbInstance);
+
+          // If there are legacy items to migrate, write them in a transaction
+          if (legacyItems.length > 0) {
+            const tx = dbInstance.transaction(STORES.QUEUE, 'readwrite');
+            const store = tx.objectStore(STORES.QUEUE);
+            for (const item of legacyItems) {
+              if (!item.project_id) {
+                item.project_id = 'default';
+              }
+              store.put(item);
+            }
+            await new Promise((res) => {
+              tx.oncomplete = () => res();
+              tx.onerror = () => res();
+            });
+          }
+          resolve(dbInstance);
+        } catch (err) {
+          reject(err);
+        }
       };
 
       request.onerror = () => reject(request.error);
+    });
+  }
+
+  async function seedDefaultProject(db) {
+    return new Promise((resolve) => {
+      const tx = db.transaction([STORES.PROJECTS], 'readwrite');
+      const store = tx.objectStore(STORES.PROJECTS);
+      const req = store.get('default');
+      req.onsuccess = () => {
+        if (!req.result) {
+          store.put({
+            id: 'default',
+            name: 'Default Project',
+            created_at: new Date().toISOString()
+          });
+        }
+        resolve();
+      };
+      req.onerror = () => resolve();
     });
   }
 
@@ -98,51 +199,62 @@ const TwitterScraperDB = (() => {
   // Tweet Queue Operations
   // ============================================================================
 
-  async function addToQueue(url, tweetId, sourcePage) {
+  async function addToQueue(projectId, url, tweetId, sourcePage) {
     const store = await _tx(STORES.QUEUE, 'readwrite');
-    const existing = await _request(store.get(url));
+    const existing = await _request(store.get([projectId, url]));
     if (existing) return false; // duplicate
 
+    // Check if this URL is already scraped in another project
+    const urlIndex = store.index('by_url');
+    const crossMatches = await _request(urlIndex.getAll(url));
+    const scrapedMatch = crossMatches.find(m => m.status === 'scraped' || m.status === 'exported');
+
     const entry = {
+      project_id: projectId,
       url,
       tweet_id: tweetId,
-      status: 'queued',
+      status: scrapedMatch ? scrapedMatch.status : 'queued',
       discovered_at: new Date().toISOString(),
-      scraped_at: null,
-      exported_at: null,
-      error: null,
-      retry_count: 0,
-      data: null,
-      replies: null,
+      scraped_at: scrapedMatch ? scrapedMatch.scraped_at : null,
+      exported_at: scrapedMatch ? scrapedMatch.exported_at : null,
+      error: scrapedMatch ? scrapedMatch.error : null,
+      retry_count: scrapedMatch ? scrapedMatch.retry_count : 0,
+      data: scrapedMatch ? scrapedMatch.data : null,
+      replies: scrapedMatch ? scrapedMatch.replies : null,
       source_page: sourcePage
     };
 
-    // Need a fresh transaction since previous one may have committed
     const writeStore = await _tx(STORES.QUEUE, 'readwrite');
     await _request(writeStore.put(entry));
     return true;
   }
 
-  async function addUrlsToQueue(urls, sourcePage) {
+  async function addUrlsToQueue(projectId, urls, sourcePage) {
     const db = await open();
     const tx = db.transaction(STORES.QUEUE, 'readwrite');
     const store = tx.objectStore(STORES.QUEUE);
+    const urlIndex = store.index('by_url');
     let added = 0;
 
     for (const { url, tweetId } of urls) {
-      const existing = await _request(store.get(url));
+      const existing = await _request(store.get([projectId, url]));
       if (!existing) {
+        // Check if this URL is already scraped in another project
+        const crossMatches = await _request(urlIndex.getAll(url));
+        const scrapedMatch = crossMatches.find(m => m.status === 'scraped' || m.status === 'exported');
+
         store.put({
+          project_id: projectId,
           url,
           tweet_id: tweetId,
-          status: 'queued',
+          status: scrapedMatch ? scrapedMatch.status : 'queued',
           discovered_at: new Date().toISOString(),
-          scraped_at: null,
-          exported_at: null,
-          error: null,
-          retry_count: 0,
-          data: null,
-          replies: null,
+          scraped_at: scrapedMatch ? scrapedMatch.scraped_at : null,
+          exported_at: scrapedMatch ? scrapedMatch.exported_at : null,
+          error: scrapedMatch ? scrapedMatch.error : null,
+          retry_count: scrapedMatch ? scrapedMatch.retry_count : 0,
+          data: scrapedMatch ? scrapedMatch.data : null,
+          replies: scrapedMatch ? scrapedMatch.replies : null,
           source_page: sourcePage
         });
         added++;
@@ -155,17 +267,17 @@ const TwitterScraperDB = (() => {
     });
   }
 
-  async function getByStatus(status) {
+  async function getByStatus(projectId, status) {
     const store = await _tx(STORES.QUEUE);
-    const index = store.index('by_status');
-    return _request(index.getAll(status));
+    const index = store.index('by_project_status');
+    return _request(index.getAll([projectId, status]));
   }
 
-  async function getNextQueued() {
+  async function getNextQueued(projectId) {
     const store = await _tx(STORES.QUEUE);
-    const index = store.index('by_status');
+    const index = store.index('by_project_status');
     return new Promise((resolve, reject) => {
-      const request = index.openCursor('queued');
+      const request = index.openCursor(IDBKeyRange.only([projectId, 'queued']));
       request.onsuccess = () => {
         const cursor = request.result;
         resolve(cursor ? cursor.value : null);
@@ -174,9 +286,9 @@ const TwitterScraperDB = (() => {
     });
   }
 
-  async function updateStatus(url, status, extra = {}) {
+  async function updateStatus(projectId, url, status, extra = {}) {
     const store = await _tx(STORES.QUEUE, 'readwrite');
-    const entry = await _request(store.get(url));
+    const entry = await _request(store.get([projectId, url]));
     if (!entry) return false;
 
     entry.status = status;
@@ -189,9 +301,9 @@ const TwitterScraperDB = (() => {
     return true;
   }
 
-  async function saveScrapedData(url, data, replies) {
+  async function saveScrapedData(projectId, url, data, replies) {
     const store = await _tx(STORES.QUEUE, 'readwrite');
-    const entry = await _request(store.get(url));
+    const entry = await _request(store.get([projectId, url]));
     if (!entry) return false;
 
     entry.status = 'scraped';
@@ -201,12 +313,29 @@ const TwitterScraperDB = (() => {
     entry.error = null;
 
     await _request(store.put(entry));
+
+    // CRITICAL: Propagate this scraped data to all other projects that have this URL queued!
+    const urlIndex = store.index('by_url');
+    const allMatches = await _request(urlIndex.getAll(url));
+    const writeStore = await _tx(STORES.QUEUE, 'readwrite');
+
+    for (const match of allMatches) {
+      if (match.project_id !== projectId && match.status === 'queued') {
+        match.status = 'scraped';
+        match.scraped_at = entry.scraped_at;
+        match.data = data;
+        match.replies = replies || [];
+        match.error = null;
+        await _request(writeStore.put(match));
+      }
+    }
+
     return true;
   }
 
-  async function markFailed(url, error) {
+  async function markFailed(projectId, url, error) {
     const store = await _tx(STORES.QUEUE, 'readwrite');
-    const entry = await _request(store.get(url));
+    const entry = await _request(store.get([projectId, url]));
     if (!entry) return false;
 
     entry.status = 'failed';
@@ -217,8 +346,8 @@ const TwitterScraperDB = (() => {
     return true;
   }
 
-  async function retryFailed(maxRetries = 2) {
-    const failed = await getByStatus('failed');
+  async function retryFailed(projectId, maxRetries = 2) {
+    const failed = await getByStatus(projectId, 'failed');
     const db = await open();
     const tx = db.transaction(STORES.QUEUE, 'readwrite');
     const store = tx.objectStore(STORES.QUEUE);
@@ -239,19 +368,19 @@ const TwitterScraperDB = (() => {
     });
   }
 
-  async function deleteFromQueue(url) {
+  async function deleteFromQueue(projectId, url) {
     const store = await _tx(STORES.QUEUE, 'readwrite');
-    return _request(store.delete(url));
+    return _request(store.delete([projectId, url]));
   }
 
-  async function deleteByStatus(status) {
-    const items = await getByStatus(status);
+  async function deleteByStatus(projectId, status) {
+    const items = await getByStatus(projectId, status);
     const db = await open();
     const tx = db.transaction(STORES.QUEUE, 'readwrite');
     const store = tx.objectStore(STORES.QUEUE);
 
     for (const item of items) {
-      store.delete(item.url);
+      store.delete([projectId, item.url]);
     }
 
     return new Promise((resolve, reject) => {
@@ -260,18 +389,37 @@ const TwitterScraperDB = (() => {
     });
   }
 
-  async function clearQueue() {
-    const store = await _tx(STORES.QUEUE, 'readwrite');
-    return _request(store.clear());
+  async function clearQueue(projectId) {
+    const db = await open();
+    const tx = db.transaction(STORES.QUEUE, 'readwrite');
+    const store = tx.objectStore(STORES.QUEUE);
+    const index = store.index('by_project');
+    const req = index.openKeyCursor(IDBKeyRange.only(projectId));
+    let deleted = 0;
+
+    req.onsuccess = () => {
+      const cursor = req.result;
+      if (cursor) {
+        store.delete(cursor.primaryKey);
+        deleted++;
+        cursor.continue();
+      }
+    };
+
+    return new Promise((resolve, reject) => {
+      tx.oncomplete = () => resolve(deleted);
+      tx.onerror = () => reject(tx.error);
+    });
   }
 
-  async function getAllQueue() {
+  async function getAllQueue(projectId) {
     const store = await _tx(STORES.QUEUE);
-    return _request(store.getAll());
+    const index = store.index('by_project');
+    return _request(index.getAll(projectId));
   }
 
-  async function getQueueCounts() {
-    const all = await getAllQueue();
+  async function getQueueCounts(projectId) {
+    const all = await getAllQueue(projectId);
     const counts = { queued: 0, scraping: 0, scraped: 0, exporting: 0, exported: 0, failed: 0, total: all.length };
     for (const item of all) {
       if (counts[item.status] !== undefined) counts[item.status]++;
@@ -362,6 +510,55 @@ const TwitterScraperDB = (() => {
   }
 
   // ============================================================================
+  // Project Operations
+  // ============================================================================
+
+  async function getProjects() {
+    const store = await _tx(STORES.PROJECTS);
+    return _request(store.getAll());
+  }
+
+  async function createProject(name) {
+    const store = await _tx(STORES.PROJECTS, 'readwrite');
+    const id = 'proj_' + Math.random().toString(36).substring(2) + Date.now().toString(36);
+    const project = {
+      id,
+      name,
+      created_at: new Date().toISOString()
+    };
+    await _request(store.put(project));
+    return project;
+  }
+
+  async function deleteProject(id) {
+    if (id === 'default') return false; // Cannot delete default project
+
+    const db = await open();
+    const tx = db.transaction([STORES.QUEUE, STORES.PROJECTS], 'readwrite');
+
+    // 1. Delete the project entry
+    tx.objectStore(STORES.PROJECTS).delete(id);
+
+    // 2. Delete all items in queue for this project
+    const queueStore = tx.objectStore(STORES.QUEUE);
+    const index = queueStore.index('by_project');
+    const req = index.openKeyCursor(IDBKeyRange.only(id));
+
+    req.onsuccess = () => {
+      const cursor = req.result;
+      if (cursor) {
+        queueStore.delete(cursor.primaryKey);
+        cursor.continue();
+      }
+    };
+
+    return new Promise((resolve, reject) => {
+      tx.oncomplete = () => resolve(true);
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
+  // ============================================================================
   // Public API
   // ============================================================================
 
@@ -396,6 +593,11 @@ const TwitterScraperDB = (() => {
     getAllSettings,
     saveSetting,
     saveAllSettings,
-    resetSettings
+    resetSettings,
+
+    // Projects
+    getProjects,
+    createProject,
+    deleteProject
   };
 })();

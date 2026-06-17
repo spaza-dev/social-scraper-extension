@@ -34,6 +34,15 @@ const els = {
   countScraped: $('countScraped'),
   countExported: $('countExported'),
   countFailed: $('countFailed'),
+  // Projects
+  projectSelect: $('projectSelect'),
+  createProjectBtn: $('createProjectBtn'),
+  deleteProjectBtn: $('deleteProjectBtn'),
+  createProjectModal: $('createProjectModal'),
+  newProjectNameInput: $('newProjectNameInput'),
+  newProjectError: $('newProjectError'),
+  cancelCreateProjectBtn: $('cancelCreateProjectBtn'),
+  saveCreateProjectBtn: $('saveCreateProjectBtn'),
   // Queue actions
   collectBtn: $('collectBtn'),
   scrapeBtn: $('scrapeBtn'),
@@ -92,6 +101,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   setupTabNavigation();
   setupEventListeners();
   setupMessageListener();
+  setupProjectHandlers();
+  await refreshProjects();
   await loadSettings();
   await refreshQueue();
 });
@@ -748,4 +759,141 @@ function formatNum(n) {
 function debounce(fn, ms) {
   let timer;
   return (...args) => { clearTimeout(timer); timer = setTimeout(() => fn(...args), ms); };
+}
+
+// ============================================================================
+// Project Management
+// ============================================================================
+
+let currentProjectId = 'default';
+
+async function refreshProjects() {
+  return new Promise(resolve => {
+    chrome.runtime.sendMessage({ type: 'GET_PROJECTS' }, async (response) => {
+      if (response?.success) {
+        const projects = response.projects || [];
+        
+        // Ensure default project is in list
+        if (!projects.some(p => p.id === 'default')) {
+          projects.unshift({ id: 'default', name: 'Default Project' });
+        }
+        
+        // Populate Select Dropdown
+        els.projectSelect.innerHTML = projects.map(p => 
+          `<option value="${escapeAttr(p.id)}">${escapeHtml(p.name)}</option>`
+        ).join('');
+        
+        // Set the active selection
+        chrome.runtime.sendMessage({ type: 'GET_SETTINGS' }, (settings) => {
+          currentProjectId = settings?.active_project_id || 'default';
+          els.projectSelect.value = currentProjectId;
+          
+          // Toggle Delete Button (don't allow deleting default)
+          if (currentProjectId === 'default') {
+            els.deleteProjectBtn.disabled = true;
+          } else {
+            els.deleteProjectBtn.disabled = false;
+          }
+          resolve();
+        });
+      } else {
+        resolve();
+      }
+    });
+  });
+}
+
+function setupProjectHandlers() {
+  // Select active project change
+  els.projectSelect.addEventListener('change', async (e) => {
+    const projId = e.target.value;
+    chrome.runtime.sendMessage({ type: 'SAVE_SETTINGS', data: { active_project_id: projId } }, async () => {
+      currentProjectId = projId;
+      if (currentProjectId === 'default') {
+        els.deleteProjectBtn.disabled = true;
+      } else {
+        els.deleteProjectBtn.disabled = false;
+      }
+      showToast('info', `Switched project`);
+      // Reset selections
+      selectedUrls.clear();
+      dataSelectedUrls.clear();
+      currentPage = 1;
+      await refreshQueue();
+      if (currentTab === 'data') renderDataTable();
+    });
+  });
+
+  // Open Create Project Modal
+  els.createProjectBtn.addEventListener('click', () => {
+    els.newProjectNameInput.value = '';
+    els.newProjectError.classList.add('hidden');
+    els.newProjectError.textContent = '';
+    els.createProjectModal.classList.remove('hidden');
+    els.newProjectNameInput.focus();
+  });
+
+  // Close Modal
+  els.cancelCreateProjectBtn.addEventListener('click', () => {
+    els.createProjectModal.classList.add('hidden');
+  });
+
+  // Save New Project
+  els.saveCreateProjectBtn.addEventListener('click', handleSaveNewProject);
+  
+  // Enter key in input
+  els.newProjectNameInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      handleSaveNewProject();
+    }
+  });
+
+  // Delete Project
+  els.deleteProjectBtn.addEventListener('click', async () => {
+    if (currentProjectId === 'default') return;
+    
+    const projName = els.projectSelect.options[els.projectSelect.selectedIndex].text;
+    if (!confirm(`Delete project "${projName}"? This will delete all collected tweets and scraped data in this project. This cannot be undone.`)) {
+      return;
+    }
+    
+    chrome.runtime.sendMessage({ type: 'DELETE_PROJECT', data: { id: currentProjectId } }, async (response) => {
+      if (response?.success) {
+        showToast('success', 'Project deleted');
+        selectedUrls.clear();
+        dataSelectedUrls.clear();
+        currentPage = 1;
+        await refreshProjects();
+        await refreshQueue();
+        if (currentTab === 'data') renderDataTable();
+      } else {
+        showToast('error', `Failed to delete project: ${response?.error}`);
+      }
+    });
+  });
+}
+
+async function handleSaveNewProject() {
+  const name = els.newProjectNameInput.value.trim();
+  if (!name) {
+    els.newProjectError.textContent = 'Project name is required';
+    els.newProjectError.classList.remove('hidden');
+    return;
+  }
+  
+  chrome.runtime.sendMessage({ type: 'CREATE_PROJECT', data: { name } }, async (response) => {
+    if (response?.success) {
+      els.createProjectModal.classList.add('hidden');
+      showToast('success', `Created project "${name}"`);
+      selectedUrls.clear();
+      dataSelectedUrls.clear();
+      currentPage = 1;
+      await refreshProjects();
+      await refreshQueue();
+      if (currentTab === 'data') renderDataTable();
+    } else {
+      els.newProjectError.textContent = response?.error || 'Failed to create project';
+      els.newProjectError.classList.remove('hidden');
+    }
+  });
 }
